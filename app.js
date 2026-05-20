@@ -1,4 +1,6 @@
 const STORAGE_KEY = "meal-diary-v1";
+const PHOTO_DB_NAME = "meal-diary-photos";
+const PHOTO_STORE_NAME = "photos";
 const mealLabels = {
   breakfast: "早餐",
   lunch: "午餐",
@@ -10,6 +12,7 @@ const state = {
   entries: [],
   view: "list",
   photoData: "",
+  photoId: "",
   deferredPrompt: null
 };
 
@@ -63,8 +66,154 @@ function loadEntries() {
   }
 }
 
+function openPhotoDb() {
+  return new Promise((resolve, reject) => {
+    if (!("indexedDB" in window)) {
+      reject(new Error("此瀏覽器不支援照片資料庫"));
+      return;
+    }
+
+    const request = indexedDB.open(PHOTO_DB_NAME, 1);
+    request.onerror = () => reject(request.error);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(PHOTO_STORE_NAME)) {
+        db.createObjectStore(PHOTO_STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+function runPhotoStore(mode, callback) {
+  return openPhotoDb().then((db) =>
+    new Promise((resolve, reject) => {
+      const tx = db.transaction(PHOTO_STORE_NAME, mode);
+      const store = tx.objectStore(PHOTO_STORE_NAME);
+      const request = callback(store);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    })
+  );
+}
+
+function putPhoto(dataUrl, photoId = crypto.randomUUID()) {
+  return runPhotoStore("readwrite", (store) => store.put(dataUrl, photoId)).then(() => photoId);
+}
+
+function getPhoto(photoId) {
+  if (!photoId) return Promise.resolve("");
+  return runPhotoStore("readonly", (store) => store.get(photoId)).then((value) => value || "");
+}
+
+function deletePhoto(photoId) {
+  if (!photoId) return Promise.resolve();
+  return runPhotoStore("readwrite", (store) => store.delete(photoId)).catch(() => undefined);
+}
+
+async function migrateInlinePhotosToIndexedDb() {
+  let changed = false;
+  const migrated = [];
+
+  for (const entry of state.entries) {
+    if (entry.photo?.startsWith("data:image/")) {
+      try {
+        const photoId = entry.photoId || crypto.randomUUID();
+        await putPhoto(entry.photo, photoId);
+        const { photo, ...entryWithoutInlinePhoto } = entry;
+        migrated.push({ ...entryWithoutInlinePhoto, photoId });
+        changed = true;
+      } catch {
+        migrated.push(entry);
+      }
+    } else {
+      migrated.push(entry);
+    }
+  }
+
+  if (changed) {
+    state.entries = migrated;
+    saveEntries();
+  }
+}
+
+function isStorageQuotaError(error) {
+  return error?.name === "QuotaExceededError" || error?.name === "NS_ERROR_DOM_QUOTA_REACHED";
+}
+
+function storageUsageKb() {
+  return Math.round((JSON.stringify(state.entries).length * 2) / 1024);
+}
+
 function saveEntries() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.entries));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.entries));
+    return true;
+  } catch (error) {
+    if (isStorageQuotaError(error)) {
+      showToast("儲存空間不足，請先匯出備份或刪除部分照片");
+      return false;
+    }
+    showToast("儲存失敗，請重新整理後再試");
+    return false;
+  }
+}
+
+function compressImageSource(src, maxSize = 900, quality = 0.64) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onerror = () => reject(new Error("照片壓縮失敗"));
+    image.onload = () => {
+      const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(image.width * scale);
+      canvas.height = Math.round(image.height * scale);
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    image.src = src;
+  });
+}
+
+async function compactStoredPhotos() {
+  const compacted = [];
+  for (const entry of state.entries) {
+    if (entry.photo?.startsWith("data:image/")) {
+      try {
+        compacted.push({
+          ...entry,
+          photo: await compressImageSource(entry.photo)
+        });
+      } catch {
+        compacted.push(entry);
+      }
+    } else {
+      compacted.push(entry);
+    }
+  }
+  state.entries = compacted;
+}
+
+async function saveEntriesWithRecovery(previousEntries) {
+  if (saveEntries()) return true;
+
+  showToast("儲存空間不足，正在嘗試壓縮照片");
+  await compactStoredPhotos();
+  if (saveEntries()) {
+    showToast(`已壓縮照片並儲存，目前約 ${storageUsageKb()} KB`);
+    return true;
+  }
+
+  state.entries = previousEntries;
+  saveEntries();
+  showToast("仍然無法儲存，請先匯出備份或刪除舊照片");
+  return false;
 }
 
 function resetForm() {
@@ -72,6 +221,7 @@ function resetForm() {
   fields.id.value = "";
   fields.date.value = todayString();
   state.photoData = "";
+  state.photoId = "";
   fields.photo.value = "";
   fields.photoPreview.hidden = true;
   fields.photoPreview.removeAttribute("src");
@@ -88,14 +238,14 @@ function resizeImage(file) {
       const image = new Image();
       image.onerror = () => reject(new Error("照片格式無法使用"));
       image.onload = () => {
-        const maxSize = 1200;
+        const maxSize = 900;
         const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
         const canvas = document.createElement("canvas");
         canvas.width = Math.round(image.width * scale);
         canvas.height = Math.round(image.height * scale);
         const context = canvas.getContext("2d");
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL("image/jpeg", 0.78));
+        resolve(canvas.toDataURL("image/jpeg", 0.68));
       };
       image.src = reader.result;
     };
@@ -129,7 +279,7 @@ function updateSummary() {
 
   $("#totalEntries").textContent = state.entries.length;
   $("#monthCost").textContent = money(monthCost);
-  $("#photoCount").textContent = state.entries.filter((entry) => entry.photo).length;
+  $("#photoCount").textContent = state.entries.filter((entry) => entry.photo || entry.photoId).length;
 }
 
 function renderList(entries) {
@@ -152,10 +302,23 @@ function renderList(entries) {
       entry.mood || ""
     ].filter(Boolean);
 
-    if (entry.photo) {
-      image.src = entry.photo;
+    if (entry.photo || entry.photoId) {
       image.alt = `${entry.dish}照片`;
-      photoLabel.hidden = true;
+      if (entry.photo) {
+        image.src = entry.photo;
+        photoLabel.hidden = true;
+      } else {
+        photoLabel.textContent = "照片載入中";
+        getPhoto(entry.photoId).then((photo) => {
+          if (photo) {
+            image.src = photo;
+            photoLabel.hidden = true;
+          } else {
+            image.remove();
+            photoLabel.textContent = "無照片";
+          }
+        });
+      }
     } else {
       image.remove();
       photoLabel.textContent = "無照片";
@@ -257,7 +420,7 @@ function setView(view) {
   $("#mapTab").setAttribute("aria-selected", String(view === "map"));
 }
 
-function editEntry(id) {
+async function editEntry(id) {
   const entry = state.entries.find((item) => item.id === id);
   if (!entry) return;
   fields.id.value = entry.id;
@@ -268,7 +431,8 @@ function editEntry(id) {
   fields.place.value = entry.place || "";
   fields.mood.value = entry.mood || "";
   fields.note.value = entry.note || "";
-  state.photoData = entry.photo || "";
+  state.photoId = entry.photoId || "";
+  state.photoData = entry.photo || (state.photoId ? await getPhoto(state.photoId) : "");
   if (state.photoData) {
     fields.photoPreview.src = state.photoData;
     fields.photoPreview.hidden = false;
@@ -285,16 +449,30 @@ function deleteEntry(id) {
   const confirmed = window.confirm(`確定刪除「${entry.dish}」這筆紀錄？`);
   if (!confirmed) return;
   state.entries = state.entries.filter((item) => item.id !== id);
-  saveEntries();
-  render();
-  showToast("紀錄已刪除");
+  if (saveEntries()) {
+    deletePhoto(entry.photoId);
+    render();
+    showToast("紀錄已刪除");
+  }
 }
 
-function saveEntry(event) {
+async function saveEntry(event) {
   event.preventDefault();
   const now = new Date().toISOString();
   const id = fields.id.value || crypto.randomUUID();
   const existing = state.entries.find((entry) => entry.id === id);
+  const previousEntries = [...state.entries];
+  let photoId = state.photoId || existing?.photoId || "";
+
+  if (state.photoData) {
+    try {
+      photoId = await putPhoto(state.photoData, photoId || crypto.randomUUID());
+    } catch {
+      showToast("照片儲存失敗，請先不要關閉頁面並匯出備份");
+      return;
+    }
+  }
+
   const entry = {
     id,
     date: fields.date.value,
@@ -304,20 +482,21 @@ function saveEntry(event) {
     place: fields.place.value.trim(),
     mood: fields.mood.value,
     note: fields.note.value.trim(),
-    photo: state.photoData,
+    photoId,
     createdAt: existing?.createdAt || now,
     updatedAt: now
   };
 
   if (existing) {
     state.entries = state.entries.map((item) => (item.id === id ? entry : item));
-    showToast("紀錄已更新");
   } else {
     state.entries.push(entry);
-    showToast("紀錄已儲存");
   }
 
-  saveEntries();
+  const saved = await saveEntriesWithRecovery(previousEntries);
+  if (!saved) return;
+
+  showToast(existing ? "紀錄已更新" : "紀錄已儲存");
   resetForm();
   render();
 }
@@ -353,11 +532,17 @@ function useCurrentLocation() {
   );
 }
 
-function exportData() {
+async function exportData() {
+  const entries = await Promise.all(
+    state.entries.map(async (entry) => ({
+      ...entry,
+      photo: entry.photo || (entry.photoId ? await getPhoto(entry.photoId) : "")
+    }))
+  );
   const payload = {
     exportedAt: new Date().toISOString(),
     app: "食光日記",
-    entries: state.entries
+    entries
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const link = document.createElement("a");
@@ -371,12 +556,22 @@ function importData(event) {
   const file = event.target.files?.[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     try {
       const data = JSON.parse(reader.result);
       const incoming = Array.isArray(data) ? data : data.entries;
       if (!Array.isArray(incoming)) throw new Error("格式不正確");
-      state.entries = incoming;
+      state.entries = [];
+      for (const entry of incoming) {
+        if (entry.photo?.startsWith("data:image/")) {
+          const photoId = entry.photoId || crypto.randomUUID();
+          await putPhoto(entry.photo, photoId);
+          const { photo, ...entryWithoutInlinePhoto } = entry;
+          state.entries.push({ ...entryWithoutInlinePhoto, photoId });
+        } else {
+          state.entries.push(entry);
+        }
+      }
       saveEntries();
       render();
       showToast("資料已匯入");
@@ -427,9 +622,10 @@ function bindEvents() {
   $("#mapTab").addEventListener("click", () => setView("map"));
 }
 
-function boot() {
+async function boot() {
   fields.date.value = todayString();
   loadEntries();
+  await migrateInlinePhotosToIndexedDb();
   bindEvents();
   initInstallPrompt();
   registerServiceWorker();
