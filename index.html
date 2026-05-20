@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#25635f">
+    <meta name="description" content="可離線使用的飲食日記 PWA，支援三餐照片、費用、地點、日曆檢索與地圖記錄。">
+    <title>食光日記</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.svg">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">PWA 飲食日記</p>
+        <h1>食光日記</h1>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" id="installButton" type="button" hidden aria-label="安裝 App" title="安裝 App">
+          <span aria-hidden="true">+</span>
+        </button>
+        <button class="icon-button" id="exportButton" type="button" aria-label="匯出資料" title="匯出資料">
+          <span aria-hidden="true">↓</span>
+        </button>
+        <label class="icon-button file-action" aria-label="匯入資料" title="匯入資料">
+          <span aria-hidden="true">↑</span>
+          <input id="importFile" type="file" accept="application/json">
+        </label>
+      </div>
+    </header>
+
+    <main class="app-shell">
+      <section class="entry-panel" aria-labelledby="formTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">新增紀錄</p>
+            <h2 id="formTitle">今天吃了什麼？</h2>
+          </div>
+          <button id="clearFormButton" class="text-button" type="button">清空</button>
+        </div>
+
+        <form id="mealForm" class="meal-form">
+          <input id="entryId" type="hidden">
+
+          <div class="photo-uploader">
+            <label class="photo-drop" for="photoInput">
+              <img id="photoPreview" alt="" hidden>
+              <span id="photoPrompt">選擇餐點照片</span>
+              <input id="photoInput" name="photo" type="file" accept="image/*">
+            </label>
+            <p id="photoMeta" class="muted">照片會壓縮後儲存在這台裝置。</p>
+          </div>
+
+          <div class="field-grid">
+            <label>
+              日期
+              <input id="dateInput" name="date" type="date" required>
+            </label>
+
+            <label>
+              餐別
+              <select id="mealTypeInput" name="mealType" required>
+                <option value="breakfast">早餐</option>
+                <option value="lunch">午餐</option>
+                <option value="dinner">晚餐</option>
+                <option value="snack">點心</option>
+              </select>
+            </label>
+
+            <label>
+              料理名稱
+              <input id="dishInput" name="dish" type="text" placeholder="例：鮭魚飯糰" required>
+            </label>
+
+            <label>
+              費用
+              <input id="costInput" name="cost" type="number" min="0" step="1" inputmode="numeric" placeholder="例：95">
+            </label>
+
+            <label>
+              地點
+              <input id="placeInput" name="place" type="text" placeholder="例：台北車站附近">
+            </label>
+
+            <label>
+              心情
+              <select id="moodInput" name="mood">
+                <option value="">未選擇</option>
+                <option value="滿足">滿足</option>
+                <option value="清爽">清爽</option>
+                <option value="普通">普通</option>
+                <option value="匆忙">匆忙</option>
+                <option value="想再吃">想再吃</option>
+              </select>
+            </label>
+          </div>
+
+          <label>
+            備註
+            <textarea id="noteInput" name="note" rows="4" placeholder="口味、份量、同行者、下次想調整的地方..."></textarea>
+          </label>
+
+          <div class="form-actions">
+            <button class="primary-button" type="submit">儲存紀錄</button>
+            <button class="secondary-button" id="locationButton" type="button">使用目前位置</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="insight-panel" aria-label="統計摘要">
+        <div class="summary-grid">
+          <article>
+            <span id="totalEntries">0</span>
+            <p>總紀錄</p>
+          </article>
+          <article>
+            <span id="monthCost">0</span>
+            <p>本月費用</p>
+          </article>
+          <article>
+            <span id="photoCount">0</span>
+            <p>照片數</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="records-panel" aria-labelledby="recordsTitle">
+        <div class="section-heading records-heading">
+          <div>
+            <p class="eyebrow">檢索</p>
+            <h2 id="recordsTitle">飲食紀錄</h2>
+          </div>
+          <div class="view-tabs" role="tablist" aria-label="檢視模式">
+            <button id="listTab" class="tab active" type="button" aria-selected="true">列表</button>
+            <button id="calendarTab" class="tab" type="button" aria-selected="false">日曆</button>
+            <button id="mapTab" class="tab" type="button" aria-selected="false">地圖</button>
+          </div>
+        </div>
+
+        <div class="filters" aria-label="篩選紀錄">
+          <label>
+            關鍵字
+            <input id="searchInput" type="search" placeholder="搜尋料理、地點、備註">
+          </label>
+          <label>
+            日期
+            <input id="filterDateInput" type="date">
+          </label>
+          <label>
+            餐別
+            <select id="filterMealInput">
+              <option value="">全部</option>
+              <option value="breakfast">早餐</option>
+              <option value="lunch">午餐</option>
+              <option value="dinner">晚餐</option>
+              <option value="snack">點心</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="listView" class="record-list" aria-live="polite"></div>
+        <div id="calendarView" class="calendar-view" hidden></div>
+        <div id="mapView" class="map-view" hidden>
+          <div class="map-frame">
+            <iframe id="mapFrame" title="地點地圖" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+            <div id="mapEmpty" class="empty-map">選擇有地點的紀錄後，這裡會顯示地圖。</div>
+          </div>
+          <div id="placeList" class="place-list"></div>
+        </div>
+      </section>
+    </main>
+
+    <template id="recordTemplate">
+      <article class="record-card">
+        <button class="photo-button" type="button">
+          <img alt="">
+          <span></span>
+        </button>
+        <div class="record-body">
+          <div class="record-topline">
+            <span class="meal-pill"></span>
+            <time></time>
+          </div>
+          <h3></h3>
+          <p class="record-meta"></p>
+          <p class="record-note"></p>
+          <div class="card-actions">
+            <button class="text-button edit-record" type="button">編輯</button>
+            <button class="danger-button delete-record" type="button">刪除</button>
+          </div>
+        </div>
+      </article>
+    </template>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="app.js" defer></script>
+  </body>
+</html>
